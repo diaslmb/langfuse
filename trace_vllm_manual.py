@@ -1,64 +1,73 @@
-import requests
-from langfuse import Langfuse
+import os
+from langfuse.openai import openai # Crucial: Import 'openai' from 'langfuse.openai'
+from langfuse import get_client # For explicit flushing
 
-langfuse = Langfuse(
-    public_key="pk-lf-ecc4dc88-5f1c-49d2-8fee-9fd119ba833d",
-    secret_key="sk-lf-66c3b9c6-34cc-4aa0-92c4-e813ba67b257",
-    host="https://cloud.langfuse.com"
-)
+# --- 1. Set Langfuse API Keys (using your provided keys) ---
+# It's best practice to load these from environment variables or a secure config.
+# For demonstration, we'll set them directly here.
+os.environ["LANGFUSE_PUBLIC_KEY"] = "pk-lf-ecc4dc88-5f1c-49d2-8fee-9fd119ba833d"
+os.environ["LANGFUSE_SECRET_KEY"] = "sk-lf-66c3b9c6-34cc-4aa0-92c4-e813ba67b257"
+os.environ["LANGFUSE_HOST"] = "https://cloud.langfuse.com" # Default cloud host
 
-VLLM_API_URL = "http://localhost:8000/v1/chat/completions"
-MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
+# --- 2. Configure OpenAI Client to Point to Your vLLM Server ---
+# Assuming your vLLM server is running locally on port 8000 and exposes an OpenAI-compatible API.
+# If your vLLM server is at a different address or port, adjust this URL.
+os.environ["OPENAI_API_BASE"] = "http://localhost:8000/v1"
 
-def call_vllm_with_tracing(prompt: str):
-    # 1. Create trace
-    trace = langfuse.create_trace(
-        name="vLLM Inference",
-        user_id="user-001"
-    )
+# vLLM's OpenAI API usually doesn't require an actual API key.
+# You can set it to "EMPTY" or any non-empty string.
+os.environ["OPENAI_API_KEY"] = "EMPTY" 
 
-    # 2. Create span under this trace
-    span = langfuse.create_span(
-        name="vLLM Chat Completion",
-        trace_id=trace.id
-    )
-    span.start()
+# --- 3. Make an LLM Call using the Langfuse-wrapped OpenAI client ---
+# The model name should match how vLLM exposes 'mistralai/Mistral-7B-Instruct-v0.2'.
+# Often, it's just the model ID you passed to vLLM's --model argument.
+vllm_model_name = "mistralai/Mistral-7B-Instruct-v0.2" # Use the exact model name vLLM is serving
 
-    try:
-        payload = {
-            "model": MODEL_NAME,
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.7,
-            "max_tokens": 200
+print(f"Attempting to connect to vLLM at: {os.environ['OPENAI_API_BASE']}")
+print(f"Using model: {vllm_model_name}")
+
+try:
+    completion = openai.chat.completions.create(
+        model=vllm_model_name,
+        messages=[
+            {"role": "system", "content": "You are a helpful and concise assistant."},
+            {"role": "user", "content": "What is the capital of Kazakhstan?"},
+        ],
+        temperature=0.7,
+        max_tokens=50,
+        # Optional: Add custom metadata that will appear in Langfuse
+        # These are passed via the 'extra_body' parameter for Langfuse's OpenAI wrapper.
+        extra_body={
+            "langfuse_name": "vllm-kazakhstan-capital-query", # A readable name for this trace
+            "langfuse_user_id": "user-kazakh-explorer", # An identifier for the user
+            "langfuse_tags": ["vllm", "mistral", "geography"], # Custom tags
         }
+    )
 
-        response = requests.post(VLLM_API_URL, json=payload)
-        response.raise_for_status()
-        result = response.json()
+    print("\n--- LLM Response ---")
+    print(completion.choices[0].message.content)
+    print("\n--- Token Usage ---")
+    print(f"Prompt Tokens: {completion.usage.prompt_tokens}")
+    print(f"Completion Tokens: {completion.usage.completion_tokens}")
+    print(f"Total Tokens: {completion.usage.total_tokens}")
 
-        reply = result["choices"][0]["message"]["content"]
+except Exception as e:
+    print(f"\n--- An Error Occurred ---")
+    print(f"Error Type: {type(e).__name__}")
+    print(f"Error Details: {e}")
+    print("\nTroubleshooting Tips:")
+    print("1. Ensure your vLLM server is running and accessible at 'http://localhost:8000'.")
+    print("   (e.g., `python -m vllm.entrypoints.openai.api_server --model mistralai/Mistral-7B-Instruct-v0.2 --port 8000 --host 0.0.0.0`)")
+    print("2. Verify that vLLM is serving the 'mistralai/Mistral-7B-Instruct-v0.2' model correctly.")
+    print("3. Check your network connectivity and firewall settings.")
+    print("4. Confirm your Langfuse API keys and host are correct.")
 
-        # 3. Log generation
-        langfuse.create_generation(
-            trace_id=trace.id,
-            name="chat-generation",
-            prompt=str(payload["messages"]),
-            completion=reply,
-            model=MODEL_NAME
-        )
 
-        span.end(output=reply)
-        return reply
-
-    except Exception as e:
-        span.log_error(name="vLLM Error", error=e)
-        span.end()
-        raise
-
-if __name__ == "__main__":
-    prompt = "Explain what Langfuse is used for when serving vLLM."
-    result = call_vllm_with_tracing(prompt)
-    print("\nLLM Output:\n", result)
+# --- 4. Flush the Langfuse Client (Important for short-lived scripts) ---
+# This ensures that all traces and observations are sent to the Langfuse server.
+# For long-running applications (like web servers), Langfuse handles flushing automatically
+# or you can configure a periodic flush.
+print("\nFlushing Langfuse client...")
+langfuse_client = get_client()
+langfuse_client.flush()
+print("Langfuse client flushed. Check your Langfuse dashboard for traces.")
