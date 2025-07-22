@@ -1,25 +1,27 @@
 import requests
 from langfuse import Langfuse
 
-# === Langfuse client ===
+# Initialize Langfuse client
 langfuse = Langfuse(
     public_key="pk-lf-ecc4dc88-5f1c-49d2-8fee-9fd119ba833d",
     secret_key="sk-lf-66c3b9c6-34cc-4aa0-92c4-e813ba67b257",
     host="https://cloud.langfuse.com"
 )
 
-# === vLLM endpoint config ===
+# vLLM configuration
 VLLM_API_URL = "http://localhost:8000/v1/chat/completions"
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
 
 def call_vllm_with_tracing(prompt: str):
-    # ✅ Create trace directly
-    trace = langfuse.create_trace(name="vLLM Inference", user_id="user-001")
-    span = trace.create_span(name="vLLM Chat Completion")
-    span.start()
+    # ✅ Create a trace using the correct method
+    trace = langfuse.traces.create(name="vLLM Inference", user_id="user-001")
+
+    # ✅ Create and start a span
+    span = langfuse.spans.create(name="vLLM Chat Completion", trace_id=trace.id)
+    langfuse.spans.update(span.id, start_time_now=True)
 
     try:
-        # Call vLLM
+        # Send request to vLLM
         payload = {
             "model": MODEL_NAME,
             "messages": [
@@ -35,8 +37,8 @@ def call_vllm_with_tracing(prompt: str):
         result = response.json()
         reply = result["choices"][0]["message"]["content"]
 
-        # Log generation
-        langfuse.create_generation(
+        # ✅ Log generation in Langfuse
+        langfuse.generations.create(
             trace_id=trace.id,
             name="chat-generation",
             prompt=str(payload["messages"]),
@@ -44,16 +46,18 @@ def call_vllm_with_tracing(prompt: str):
             model=MODEL_NAME,
         )
 
-        span.end(output=reply)
+        # ✅ End span
+        langfuse.spans.update(span.id, end_time_now=True, output=reply)
+
         return reply
 
     except Exception as e:
-        span.log_error(name="vLLM Error", error=e)
-        span.end()
+        langfuse.spans.update(span.id, end_time_now=True)
+        langfuse.spans.log(span.id, name="vLLM Error", level="ERROR", message=str(e))
         raise
 
-# === Run test
+# Run
 if __name__ == "__main__":
-    prompt = "Explain Langfuse observability for custom LLMs."
+    prompt = "What is Langfuse and how can it help in LLM observability?"
     result = call_vllm_with_tracing(prompt)
     print("\nLLM Output:\n", result)
