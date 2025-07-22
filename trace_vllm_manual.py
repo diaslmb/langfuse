@@ -1,31 +1,38 @@
 import requests
 from langfuse import Langfuse
+from langfuse.model import CreateTrace, CreateSpan, CreateGeneration
 
-# Initialize Langfuse client
+# Initialize Langfuse manually
 langfuse = Langfuse(
     public_key="pk-lf-ecc4dc88-5f1c-49d2-8fee-9fd119ba833d",
     secret_key="sk-lf-66c3b9c6-34cc-4aa0-92c4-e813ba67b257",
     host="https://cloud.langfuse.com"
 )
 
-# vLLM configuration
 VLLM_API_URL = "http://localhost:8000/v1/chat/completions"
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
 
 def call_vllm_with_tracing(prompt: str):
-    # ✅ Create a trace using the correct method
-    trace = langfuse.traces.create(name="vLLM Inference", user_id="user-001")
+    # 1. Create trace
+    trace = langfuse.trace(CreateTrace(
+        name="vLLM Inference",
+        user_id="user-001"
+    ))
 
-    # ✅ Create and start a span
-    span = langfuse.spans.create(name="vLLM Chat Completion", trace_id=trace.id)
-    langfuse.spans.update(span.id, start_time_now=True)
+    # 2. Create span
+    span = langfuse.span(CreateSpan(
+        name="vLLM Chat Completion",
+        trace_id=trace.id
+    ))
+
+    span.start()
 
     try:
-        # Send request to vLLM
+        # 3. Send request to vLLM
         payload = {
             "model": MODEL_NAME,
             "messages": [
-                {"role": "system", "content": "You are a helpful AI assistant."},
+                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.7,
@@ -35,29 +42,29 @@ def call_vllm_with_tracing(prompt: str):
         response = requests.post(VLLM_API_URL, json=payload)
         response.raise_for_status()
         result = response.json()
+
         reply = result["choices"][0]["message"]["content"]
 
-        # ✅ Log generation in Langfuse
-        langfuse.generations.create(
+        # 4. Log generation
+        langfuse.generation(CreateGeneration(
             trace_id=trace.id,
             name="chat-generation",
             prompt=str(payload["messages"]),
             completion=reply,
-            model=MODEL_NAME,
-        )
+            model=MODEL_NAME
+        ))
 
-        # ✅ End span
-        langfuse.spans.update(span.id, end_time_now=True, output=reply)
-
+        # 5. End span
+        span.end(output=reply)
         return reply
 
     except Exception as e:
-        langfuse.spans.update(span.id, end_time_now=True)
-        langfuse.spans.log(span.id, name="vLLM Error", level="ERROR", message=str(e))
+        span.log_error(name="vLLM Error", error=e)
+        span.end()
         raise
 
-# Run
+# === Run it
 if __name__ == "__main__":
-    prompt = "What is Langfuse and how can it help in LLM observability?"
+    prompt = "Explain what Langfuse is and how it works with vLLM."
     result = call_vllm_with_tracing(prompt)
     print("\nLLM Output:\n", result)
